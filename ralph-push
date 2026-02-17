@@ -1,0 +1,43 @@
+pipeline {
+    agent any
+
+    environment {
+        LOCAL_IMAGE = "mostakim/ralph:latest"
+        REGISTRY    = "localhost:5000"
+        REPO_NAME   = "ralph"
+        IMAGE_TAG   = "latest"
+    }
+
+    stages {
+        stage('Tag for Local Registry') {
+            steps {
+                echo "Tagging image..."
+                // Use double quotes to let Groovy handle the variables
+                sh "docker tag ${LOCAL_IMAGE} ${REGISTRY}/${REPO_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Push to Local Drive Storage') {
+            steps {
+                echo "Pushing to Local Registry..."
+                sh '''
+                    # Unset proxy to avoid redirecting local traffic to Fortinet
+                    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+                    
+                    # We use the raw variable names without the curly braces inside the shell
+                    docker push $REGISTRY/$REPO_NAME:$IMAGE_TAG
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Successfully stored image on local drive!"
+            sh "du -sh /home/mostakim/docker-registry-data"
+        }
+        failure {
+            echo "Push failed. Ensure the 'registry' container is running on port 5000."
+        }
+    }
+}

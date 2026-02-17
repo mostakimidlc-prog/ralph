@@ -1,0 +1,62 @@
+pipeline {
+    agent any
+
+    environment {
+        PROJECT_NAME = "ralph" 
+        IMAGE_NAME   = "mostakim/${PROJECT_NAME}"
+        PROXY_URL    = "http://192.168.111.21:8080"
+        PROJECT_DIR  = "/home/mostakim/projects/${PROJECT_NAME}"
+        IMAGE_TAG    = "latest"
+        PLATFORM     = "linux/amd64"
+    }
+
+    stages {
+        stage('Verify Environment') {
+            steps {
+                sh 'docker version && docker buildx version'
+            }
+        }
+
+        stage('Prepare Buildx Builder') {
+            steps {
+                // Using single quotes for the sh command to protect internal double quotes
+                sh 'docker buildx rm mybuilder || true'
+                sh "docker buildx create --name mybuilder --driver docker-container --driver-opt 'env.http_proxy=${PROXY_URL}' --driver-opt 'env.https_proxy=${PROXY_URL}' --driver-opt 'env.no_proxy=localhost' --use"
+                sh 'docker buildx inspect --bootstrap'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                withEnv([
+                    "http_proxy=${PROXY_URL}",
+                    "https_proxy=${PROXY_URL}"
+                ]) {
+                    sh """
+                        cd ${PROJECT_DIR}
+                        docker buildx build \\
+                            --platform ${PLATFORM} \\
+                            --build-arg http_proxy=${PROXY_URL} \\
+                            --build-arg https_proxy=${PROXY_URL} \\
+                            --build-arg no_proxy=localhost \\
+                            -t ${IMAGE_NAME}:${IMAGE_TAG} \\
+                            --load .
+                    """
+                }
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                sh "docker images | grep ${PROJECT_NAME} || true"
+            }
+        }
+    }
+
+    post {
+        always {
+            // Cleanup builder to free up memory and local ports
+            sh 'docker buildx rm mybuilder || true'
+        }
+    }
+}

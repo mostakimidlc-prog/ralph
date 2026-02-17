@@ -1,0 +1,43 @@
+pipeline {
+    agent any
+
+    environment {
+        // Path to the kubeconfig we fixed for Jenkins earlier
+        KUBECONFIG = "/var/lib/jenkins/.kube/config"
+        STACK_FILE = "/home/mostakim/projects/ralph/ralph-stack.yaml"
+    }
+
+    stages {
+        stage('Validate Environment') {
+            steps {
+                sh 'kubectl cluster-info'
+                sh "test -f ${STACK_FILE} || exit 1"
+            }
+        }
+
+        stage('Deploy Stack') {
+            steps {
+                echo "Applying Ralph Stack (Web, DB, Redis)..."
+                sh "kubectl apply -f ${STACK_FILE}"
+            }
+        }
+
+        stage('Verification') {
+            steps {
+                echo "Waiting for pods to be ready..."
+                // This waits up to 90 seconds for the pods to settle
+                sh "kubectl wait --for=condition=ready pod -l app=ralph --timeout=90s"
+                sh "kubectl get svc ralph-service"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Successfully deployed! Access Ralph at: http://172.19.24.164:30098"
+        }
+        failure {
+            echo "Deployment failed. Check 'kubectl describe' or 'kubectl logs'."
+        }
+    }
+}

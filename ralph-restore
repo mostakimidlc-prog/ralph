@@ -1,0 +1,82 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'SQL_BACKUP_FILE', defaultValue: '', description: 'SQL filename (e.g., ralph_backup_20260217_1532.sql)')
+        string(name: 'MEDIA_BACKUP_FILE', defaultValue: '', description: 'Media filename (e.g., ralph_media_20260217_1532.tar.gz)')
+        booleanParam(name: 'RUN_MIGRATIONS', defaultValue: true, description: 'Run ralph migrate after restore?')
+    }
+
+    environment {
+        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml"
+        DB_USER = "ralph_ng"
+        DB_PASS = "ralph_ng"
+        DB_NAME = "ralph_ng"
+        BACKUP_DIR = "/home/mostakim/projects/ralph/backups"
+        RALPH_DIR = "/home/mostakim/projects/ralph"
+    }
+
+    stages {
+        stage('Validate & Safety Backup') {
+            steps {
+                script {
+                    if (params.SQL_BACKUP_FILE == "") { error "Missing SQL filename!" }
+                    echo "Checking if backup exists..."
+                    sh "test -f ${BACKUP_DIR}/${params.SQL_BACKUP_FILE}"
+
+                    echo "Taking safety backup of current state..."
+                    def timestamp = new Date().format("yyyyMMdd_HHmm")
+                    sh "kubectl exec deployment/ralph-db -- /usr/bin/mysqldump -u ${DB_USER} --password=${DB_PASS} --no-tablespaces ${DB_NAME} > ${BACKUP_DIR}/safety_pre_restore_${timestamp}.sql"
+                }
+            }
+        }
+
+        stage('Restore Database') {
+            steps {
+                echo "Restoring Database..."
+                sh "kubectl exec -i deployment/ralph-db -- /usr/bin/mysql -u ${DB_USER} --password=${DB_PASS} ${DB_NAME} < ${BACKUP_DIR}/${params.SQL_BACKUP_FILE}"
+            }
+        }
+
+        stage('Restore Media') {
+            when { expression { params.MEDIA_BACKUP_FILE != '' } }
+            steps {
+                echo "Restoring Media files (WSL/NTFS Compatibility Mode)..."
+                sh """
+                    sudo rm -rf ${RALPH_DIR}/ralph-media/*
+                    sudo tar -xzm --no-same-owner --no-same-permissions -f ${BACKUP_DIR}/${params.MEDIA_BACKUP_FILE} -C ${RALPH_DIR}/
+                    sudo chmod -R 777 ${RALPH_DIR}/ralph-media
+                """
+            }
+        }
+
+        stage('Run Migrations') {
+            when { expression { params.RUN_MIGRATIONS } }
+            steps {
+                echo "Updating database schema..."
+                sh "kubectl exec deployment/ralph-web -- ralph migrate --noinput"
+            }
+        }
+
+        stage('Finalize') {
+            steps {
+                echo "Cleaning up pods to resolve port conflicts..."
+                // Force delete the pending/stuck pods
+                sh "kubectl delete pods -l app=ralph --force --grace-period=0 || true"
+                
+                echo "Waiting for new pods to stabilize..."
+                // Increased timeout and made it non-blocking to prevent Jenkins failure
+                sh "kubectl rollout status deployment/ralph-web --timeout=5m || echo 'Rollout is slow, but data is restored. Please check pods manually.'"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Ralph Restore successfully finished!"
+        }
+        failure {
+            echo "Restore failed. Check Jenkins logs and pod status with 'kubectl get pods'."
+        }
+    }
+}

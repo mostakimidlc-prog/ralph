@@ -1,0 +1,34 @@
+pipeline {
+    agent any 
+    
+    environment {
+        PROJECT_NAME = "ralph"
+        REPO_URL = "https://github.com/mostakimidlc-prog/ralph.git"
+        PROXY = "http://192.168.111.21:8080"
+    }
+
+    stages {
+        stage('Clone or Update') {
+            steps {
+                // withEnv handles the proxy for all commands inside the block
+                withEnv(["http_proxy=${PROXY}", "https_proxy=${PROXY}"]) {
+                    sh """
+                        mkdir -p /home/mostakim/projects
+                        cd /home/mostakim/projects
+
+                        if [ -d "${PROJECT_NAME}/.git" ]; then
+                            echo "Updating existing repository..."
+                            cd ${PROJECT_NAME}
+                            git config http.proxy ${PROXY}
+                            git pull
+                        else
+                            echo "Cloning fresh repository..."
+                            rm -rf ${PROJECT_NAME}
+                            git clone ${REPO_URL} ${PROJECT_NAME}
+                        fi
+                    """
+                }
+            }
+        }
+    }
+}

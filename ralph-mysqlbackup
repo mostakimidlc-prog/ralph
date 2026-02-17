@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    environment {
+        // Point Jenkins specifically to the K3s config
+        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml"
+        
+        // Ralph Database Credentials (from your stack file)
+        DB_USER = "ralph_ng"
+        DB_PASS = "ralph_ng"
+        DB_NAME = "ralph_ng"
+        
+        // Backup directory for Ralph
+        BACKUP_DIR = "/home/mostakim/projects/ralph/backups"
+    }
+
+    stages {
+        stage('Prepare Backup Directory') {
+            steps {
+                // Ensure the backup directory exists and is writable by Jenkins
+                sh "mkdir -p ${BACKUP_DIR}"
+                sh "chmod 777 ${BACKUP_DIR}" 
+            }
+        }
+
+        stage('Execute Ralph MySQL Dump') {
+            steps {
+                script {
+                    def timestamp = new Date().format("yyyyMMdd_HHmm")
+                    def backupFile = "${BACKUP_DIR}/ralph_backup_${timestamp}.sql"
+                    
+                    echo "Starting Ralph database backup to ${backupFile}..."
+                    
+                    // Executing dump from the ralph-db deployment
+                    // Using --no-tablespaces to avoid permission issues often found in MySQL 8
+                    sh "kubectl exec deployment/ralph-db -- /usr/bin/mysqldump -u ${DB_USER} --password=${DB_PASS} --no-tablespaces ${DB_NAME} > ${backupFile}"
+                }
+            }
+        }
+
+        stage('Backup Media Files') {
+            steps {
+                script {
+                    def timestamp = new Date().format("yyyyMMdd_HHmm")
+                    def mediaBackup = "${BACKUP_DIR}/ralph_media_${timestamp}.tar.gz"
+                    
+                    echo "Compressing Ralph media files..."
+                    // This backs up the physical folder on your host linked to the PVC
+                    sh "tar -czf ${mediaBackup} -C /home/mostakim/projects/ralph/ ralph-media"
+                }
+            }
+        }
+
+        stage('Cleanup & Verify') {
+            steps {
+                echo "Verifying backup files in ${BACKUP_DIR}:"
+                sh "ls -lh ${BACKUP_DIR}"
+                // Optional: Delete backups older than 7 days to save space
+                sh "find ${BACKUP_DIR} -name '*.sql' -mtime +7 -delete"
+                sh "find ${BACKUP_DIR} -name '*.tar.gz' -mtime +7 -delete"
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "Ralph backup completed successfully."
+        }
+        failure {
+            echo "Ralph backup failed. Check database connectivity or KUBECONFIG permissions."
+        }
+    }
+}
