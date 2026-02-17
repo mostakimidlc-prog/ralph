@@ -1,0 +1,218 @@
+# ralph-stack.yaml
+---
+# 1. STORAGE DEFINITIONS
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ralph-db-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes: ["ReadWriteOnce"]
+  hostPath:
+    path: "/home/mostakim/projects/ralph/mysql-data"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ralph-db-pvc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ralph-media-pv
+spec:
+  capacity:
+    storage: 2Gi # Reverted to 2Gi to fix the Jenkins Resizing error
+  accessModes: ["ReadWriteOnce"]
+  hostPath:
+    path: "/home/mostakim/projects/ralph/ralph-media"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ralph-media-pvc
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi # Must match the original size to avoid "Forbidden" error
+---
+# 2. MySQL DATABASE
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ralph-db
+spec:
+  selector:
+    matchLabels:
+      app: ralph-db
+  template:
+    metadata:
+      labels:
+        app: ralph-db
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.2
+        imagePullPolicy: IfNotPresent
+        args: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+        env:
+        - name: MYSQL_DATABASE
+          value: "ralph_ng"
+        - name: MYSQL_ROOT_PASSWORD
+          value: "ralph_ng"
+        - name: MYSQL_USER
+          value: "ralph_ng"
+        - name: MYSQL_PASSWORD
+          value: "ralph_ng"
+        ports:
+        - containerPort: 3306
+        volumeMounts:
+        - name: db-storage
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: db-storage
+        persistentVolumeClaim:
+          claimName: ralph-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ralph-db-service
+spec:
+  selector:
+    app: ralph-db
+  ports:
+    - port: 3306
+---
+# 3. REDIS CACHE
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ralph-redis
+spec:
+  selector:
+    matchLabels:
+      app: ralph-redis
+  template:
+    metadata:
+      labels:
+        app: ralph-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ralph-redis-service
+spec:
+  selector:
+    app: ralph-redis
+  ports:
+    - port: 6379
+---
+# 4. RALPH WEB APP (Automated Deployment)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ralph-web
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ralph
+  template:
+    metadata:
+      labels:
+        app: ralph
+    spec:
+      # Ensures DB is ready and schema is updated before app starts
+      initContainers:
+      - name: init-migrate
+        image: mostakim/ralph:latest
+        imagePullPolicy: IfNotPresent
+        command: ["ralph", "migrate", "--noinput"]
+        env:
+        - name: DATABASE_NAME
+          value: "ralph_ng"
+        - name: DATABASE_USER
+          value: "ralph_ng"
+        - name: DATABASE_PASSWORD
+          value: "ralph_ng"
+        - name: DATABASE_HOST
+          value: "ralph-db-service"
+        - name: DATABASE_PORT
+          value: "3306"
+        - name: REDIS_HOST
+          value: "ralph-redis-service"
+        - name: REDIS_PORT
+          value: "6379"
+
+      containers:
+      - name: ralph
+        image: mostakim/ralph:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DATABASE_NAME
+          value: "ralph_ng"
+        - name: DATABASE_USER
+          value: "ralph_ng"
+        - name: DATABASE_PASSWORD
+          value: "ralph_ng"
+        - name: DATABASE_HOST
+          value: "ralph-db-service"
+        - name: DATABASE_PORT
+          value: "3306"
+        - name: REDIS_HOST
+          value: "ralph-redis-service"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
+        - name: RALPH_DEBUG
+          value: "1"
+        - name: ALLOWED_HOSTS
+          value: "*"
+        - name: http_proxy
+          value: "http://192.168.111.21:8080"
+        - name: https_proxy
+          value: "http://192.168.111.21:8080"
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: media-storage
+          mountPath: /var/local/ralph/media
+      volumes:
+      - name: media-storage
+        persistentVolumeClaim:
+          claimName: ralph-media-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ralph-service
+spec:
+  type: NodePort
+  selector:
+    app: ralph
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30098
